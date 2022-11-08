@@ -1,0 +1,291 @@
+---
+- name: Install LAMP and deploy laravel app
+  hosts: 178.128.168.32
+  become: yes
+
+  tasks:
+  - name: Update Apt Repository
+    apt: update_cache=yes cache_valid_time=3600
+  - name: Upgrade The Apt Repository
+    apt: upgrade=yes update_cache=yes cache_valid_time=3600
+
+  - name: Install 'wget', 'git', 'curl', and 'apache2'
+    apt:
+     pkg:
+     - wget
+     - git
+     - curl
+     - apache2
+
+  - name: Install Uncomplicated Firewall
+    apt: name=ufw state=present
+  - name: Allow access to SSH port
+    ufw: rule=allow port='22' proto=tcp
+  - name: Allow access to HTTP port
+    ufw: rule=allow port='80' proto=tcp
+  - name: Allow access to HTTPS port
+    ufw: rule=allow port='443'
+  - name: Allow access to port 853 (DNS over TLS)
+    ufw: rule=allow port='853'
+  - name: Allow access to MySQL Server port
+    ufw: rule=allow port='3306'
+  - name: Allow access to PostgreSQL Server port
+    ufw: rule=allow port='5432'
+  - name: Allow OpenSSH
+    ufw: name=OpenSSH rule=allow
+  - name: Enable ufw
+    ufw: state=enabled policy=allow
+
+  - name: Update apt Repository
+    apt: update_cache=yes cache_valid_time=3600
+  - name: Upgrade apt
+    apt: upgrade=yes update_cache=yes cache_valid_time=3600
+
+  - name: Install Python3
+    apt: name=python3 state=latest
+  - name: Install pip
+    apt: name=pip state=latest
+
+  - name: Installing Mysql and dependencies
+    package:
+       name: "{{item}}"
+       state: present
+       update_cache: yes
+    loop:
+       - mysql-server
+       - mysql-client
+       - python3-mysqldb
+       - libmysqlclient-dev
+
+  - name: start and enable mysql service
+    service:
+        name: mysql
+        state: started
+        enabled: yes
+
+  - name: creating mysql user (mathida)
+    mysql_user:
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        name: "{{db_user}}"
+        password: "{{db_pass}}"
+        priv: '*.*:ALL'
+        host: '%'
+        state: present
+    no_log: true
+
+  - name: creating mathida database
+    mysql_db:
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+        name: "{{db_name}}"
+        state: present
+
+  - name: Enable remote login to mysql
+    lineinfile:
+         path: /etc/mysql/mysql.conf.d/mysqld.cnf
+         regexp: '^bind-address'
+         line: 'bind-address = 0.0.0.0'
+         backup: yes
+    notify:
+         - Restart mysql
+
+  - name: Removes anonymous Mysql accounts
+    mysql_user:
+        name: ''
+        host_all: yes
+        state: absent
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+    no_log: true
+
+  - name: Remove mysql test database
+    mysql_db:
+      login_unix_socket: /var/run/mysqld/mysqld.sock
+      login_user: root
+      login_password: "{{db_pass}}"
+      name: test
+      state: absent
+    notify:
+         - Restart mysql
+
+  - name: Add the packages in sources lists
+    command: apt install apt-transport-https lsb-release software-properties-common ca-certificates -y
+
+  - name: Add the packages in sources lists
+    command: add-apt-repository ppa:ondrej/php -y
+
+  - name: Update the apt cache
+    apt: update_cache=yes cache_valid_time=3600
+
+  - name: install php8.1
+    apt: name="{{php_apt}}" state=latest
+
+  - name: php version
+    command: php -v
+
+  - name: ensure php8-fpm cgi.fix_pathinfo=0
+    lineinfile: dest=/etc/php/8.1/apache2/php.ini regexp='^(.*)cgi.fix_pathinfo=' line=cgi.fix_pathinfo=0
+
+  - name: Disable the default apache web page
+    command: a2dissite 000-default.conf
+
+  - name: Get Composer Installer
+    get_url:
+      url: https://getcomposer.org/installer
+      dest: /tmp/composer-setup.php
+
+  - name: Install Composer
+    command:
+      cmd: /usr/bin/php /tmp/composer-setup.php
+      creates: composer.phar
+
+  - name: Move composer to bin (run from any directory)
+    become: true
+    copy:
+      src: composer.phar
+      dest: /usr/local/bin/composer
+      remote_src: yes
+      mode: '0755'
+
+  # - name: Remove phar
+  #   file:
+  #     path: composer.phar
+  #     state: absent
+
+  # - name: Remove Install Script
+  #   file:
+  #     path: /tmp/composer-setup.php
+  #     state: absent
+
+  - name: Clone laravel real world example repository
+    command: git clone https://github.com/f1amy/laravel-realworld-example-app.git /var/www/laravel-realworld-example-app
+
+  - name: Rename repository
+    command: mv /var/www/laravel-realworld-example-app /var/www/mathidaduku 
+
+  - name: Set ownership to apache user www-data
+    file:
+      path: /var/www/mathidaduku
+      state: directory
+      recurse: yes
+      owner: www-data
+      group: www-data
+
+  - name: Give the application the right permissions
+    file:
+      path: /var/www/mathidaduku
+      state: directory
+      mode: '0755'
+      owner: root
+      group: root
+
+  - name: Set up additional directory permissions for www-data user on storage folder
+    file:
+      path: /var/www/mathidaduku/storage/logs/laravel.log
+      mode: '0777'
+      owner: root
+      state: directory
+
+  - name: Give permissions for www-data user on bootstrap/cache folder
+    file:
+      path: /var/www/mathidaduku/bootstrap/cache
+      state: directory
+      mode: '0777'
+      owner: root
+
+  - name: copy Virtual host configurations
+    template:
+      src: "web.conf.j2"
+      dest: "/etc/apache2/sites-available/mathidaduku.conf"
+
+  - name: Set up .env file
+    template:
+      src: .env.j2
+      dest: "/var/www/mathidaduku/.env"
+      mode: '0775'
+
+  - name: Enable Apache Rewrite Rules # Apache's mod_rewrite module lets you rewrite URLs more cleanly, translating human-readable paths into code-friendly query strin>
+    command: a2enmod rewrite
+
+    notify:
+        - Restart apache2
+
+  - name: Set up htaccess file
+    template:
+      src: .htaccess.j2
+      dest: "/var/www/mathidaduku/.htaccess"
+      mode: '0775'
+
+  - name: Uncomment the route in web.php
+    template:
+      src: web.php.j2
+      dest: /var/www/mathidaduku/routes/
+      mode: '0775'
+
+  - name: Installing Laravel dependencies
+    composer:
+      command: install
+      working_dir: "/var/www/mathidaduku"
+    become: false
+    tags: [ 'composer:install' ]
+    ignore_errors: yes
+
+# composer
+
+  - name: Generate app key
+    command: "/usr/bin/php /var/www/mathidaduku/artisan key:generate"
+    tags: [ 'laravel', 'artisan:key' ]
+
+  - name: Set up app storage link
+    command: "/usr/bin/php /var/www/mathidaduku/artisan storage:link"
+    tags: [ 'laravel', 'artisan:storage' ]
+
+  - name: Run Migrations + Seeders
+    command: "/usr/bin/php /var/www/mathidaduku/artisan migrate"
+    tags: [ 'laravel', 'artisan:migrate' ]
+    ignore_errors: yes 
+
+  - name: Enable Laravel Application Configurations To Display as Web Page
+    command: a2ensite mathidaduku.conf
+
+    notify:
+        - Reload apache2
+
+  - name: Removes "default" site
+    file:
+      path: "/etc/apache2/sites-enabled/000-default.conf"
+      state: absent
+
+    notify:
+        - Reload apache2
+
+  - name: Enable Laravel Application Configurations To Display as Web Page
+    command: a2ensite mathidaduku.conf
+
+    notify:
+        - Reload apache2
+
+  -  name: copy bash script
+     template:
+      src: pgsql.sh.j2
+      dest: "/root/pgsql.sh"
+      mode: "0777"
+
+  -  name: Execute  script
+     command: bash /root/pgsql.sh
+
+  handlers:
+    - name: Restart mysql
+      service:
+        name: mysql
+        state: restarted
+
+    -  name: Restart apache2
+       service:
+        name: apache2
+        state: restarted
+
+    - name: Reload apache2
+      service:
+        name: apache2
+        state: reloaded 
+
+

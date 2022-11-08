@@ -1,0 +1,21 @@
+#! usr/bin/bash
+
+## Update server
+
+echo "Updating server"
+sudo apt update -y
+sudo apt upgrade -y
+
+## Install postgres package
+
+echo "Installing package"
+sudo apt install postgresql postgresql-contrib
+
+## Ensure service is started
+
+echo "Starting postgresql service"
+sudo systemctl start postgresql.service
+
+## Create database
+echo "Creating database jess"
+sudo -u postgres createdb jess
